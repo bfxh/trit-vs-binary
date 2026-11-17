@@ -18,6 +18,10 @@ path = "src/bin/trit_visibility.rs"
 name = "trit_gui"
 path = "src/bin/trit_gui.rs"
 
+[[bin]]
+name = "gpu_bw"
+path = "src/bin/gpu_bw.rs"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
