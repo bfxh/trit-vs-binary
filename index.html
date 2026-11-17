@@ -103,8 +103,8 @@
 
 <div class="verdict" id="verdict">
   用 <b>WebGPU</b> 在本机显卡上跑同一份 kernel：二进制逐对象比较，三进制位平面一次判 32 个。
-  数据量 100 万对象（二进制 12 MB，三进制 375 KB），都落在 L2 内，所以差距不会被带宽放大——
-  这正是「数据在 L2 里时，三进制赢不了太多」的现成演示。
+  数据量 <b>1000 万对象</b>——二进制 120 MB（<b>超出 L2</b>），三进制 3.75 MB（<b>仍在 L2 内</b>）。
+  这正是带宽差距开始兑现的地方，和 Rust 侧 32× 的前提一致。
 </div>
 
 <footer>
@@ -113,7 +113,7 @@
 </footer>
 
 <script type="module">
-const N = 1_000_000;          // 对象数
+const N = 10_000_000;         // 对象数（1000 万，120 MB，超出 L2）
 const NW = N / 32;             // 位平面字数
 const REPEAT = 10;             // 每帧重复次数（压 GPU）
 
@@ -170,7 +170,12 @@ async function init() {
   }
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (!adapter) { fail('拿不到 GPU 适配器（可能禁用了硬件加速）。'); return false; }
-  device = await adapter.requestDevice();
+  device = await adapter.requestDevice({
+    requiredLimits: {
+      maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+      maxBufferSize: adapter.limits.maxBufferSize,
+    },
+  });
   queue = device.queue;
 
   const info = adapter.info || {};
@@ -264,8 +269,8 @@ async function init() {
   });
 
   $('objs').textContent = N.toLocaleString();
-  $('binBw').textContent = '12.0 MB';
-  $('triBw').textContent = '0.38 MB';
+  $('binBw').textContent = '120 MB';
+  $('triBw').textContent = '3.75 MB';
   $('start').disabled = false;
   return true;
 }
@@ -343,12 +348,20 @@ $('stop').onclick = () => {
   $('status').textContent = '已停止';
 };
 
-// 自动检查 WebGPU 可用性
+// 页面加载即自动开始（默认 1000 万对象）
 if (!navigator.gpu) {
   fail('这个浏览器不支持 WebGPU。请用 Chrome / Edge 113+，并确认开启了硬件加速。');
 } else {
-  $('start').disabled = false;
-  $('status').textContent = 'WebGPU 可用，点「开始跑」';
+  $('status').textContent = '正在初始化：生成 1000 万对象数据…';
+  setTimeout(async () => {
+    const ok = await init();
+    if (!ok) return;
+    running = true;
+    $('start').disabled = true;
+    $('stop').disabled = false;
+    lastT = performance.now();
+    frame();
+  }, 30);
 }
 </script>
 </body>
