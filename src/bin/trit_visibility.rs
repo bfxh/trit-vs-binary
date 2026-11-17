@@ -10,7 +10,7 @@
 
 use std::time::Instant;
 
-const N: u32 = 1_000_000;
+const N: u32 = 10_000_000;
 const NW: u32 = N / 32; // 位平面字数（u32 = 32 位）
 const REPS: u32 = 200;
 const WG: u32 = 256;
@@ -433,19 +433,21 @@ fn main() {
 
     println!("{:<14} | {:>10} | {:>14} | {:>12}", "实现", "ms/次", "百万对象/秒", "带宽/次");
     println!("{:-<14}-+-{:-<10}-+-{:-<14}-+-{:-<12}", "", "", "", "");
+    let bin_bytes = N as f64 * 12.0 / 1e6; // 3 × f32
+    let tri_bytes = N as f64 * 12.0 / 32.0 / 1e6; // 3 平面 × N/32 个 u32
     println!(
-        "{:<14} | {:>10.4} | {:>14.1} | {:>11.1} MB",
+        "{:<14} | {:>10.4} | {:>14.1} | {:>11.2} MB",
         "BINARY",
         t_bin * 1000.0,
         N as f64 / t_bin / 1e6,
-        12.0
+        bin_bytes
     );
     println!(
         "{:<14} | {:>10.4} | {:>14.1} | {:>11.2} MB",
         "TERNARY",
         t_tri * 1000.0,
         N as f64 / t_tri / 1e6,
-        0.375
+        tri_bytes
     );
     println!("\n倍数：{:.2}x（binary / ternary）", t_bin / t_tri);
     println!("正确性：binary 命中 {bin_check} · ternary 命中 {tri_check} · 期望 {expect}");
