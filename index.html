@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>三进制 vs 二进制 · GPU 位并行筛选（真跑）</title>
+<title>三进制 vs 二进制 · 十亿对象 GPU 测试（真跑）</title>
 <style>
   :root{--bg:#0b0d12;--panel:#12151d;--line:#1f2430;--bin:#4aa3ff;--tri:#43e97b;--dim:#7b8496;--text:#e6e9ef}
   *{box-sizing:border-box}
@@ -34,133 +34,222 @@
   .meta{display:flex;justify-content:space-between;margin-top:10px;font-size:12px;
     font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--dim)}
   .meta b{color:var(--text);font-weight:600}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
   .summary{max-width:1180px;margin:22px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
   .summary .big{font-size:30px}
   .summary .lbl{color:var(--dim);font-size:12px;margin-top:2px}
-  .chart{max-width:1180px;margin:22px 0 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
-  .chart h3{margin:0 0 14px;font-size:15px;font-weight:600}
-  .row{display:flex;align-items:center;gap:12px;margin:10px 0}
-  .row .name{width:86px;color:var(--dim);font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
-  .row .track{flex:1;height:26px;background:#161a23;border-radius:6px;overflow:hidden}
-  .row .fill{height:100%;width:0;transition:width .3s}
-  .row.bin .fill{background:linear-gradient(90deg,#2563eb,#4aa3ff)}
-  .row.tri .fill{background:linear-gradient(90deg,#17944a,#43e97b)}
-  .row .num{width:150px;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
   .verdict{max-width:1180px;margin:22px 0 0;padding:16px 18px;border-radius:14px;
     background:#0f1a14;border:1px solid #1d3a29;color:#bfe8cf;font-size:13.5px}
   .verdict b{color:var(--tri)}
   .err{max-width:1180px;margin:18px 0 0;padding:14px 16px;border-radius:12px;
     background:#2a1414;border:1px solid #5a2020;color:#ffb4b4;font-size:13px;display:none}
+  .warn{max-width:1180px;margin:0 0 18px;padding:12px 16px;border-radius:12px;
+    background:#241d0f;border:1px solid #4a3a16;color:#f0d9a0;font-size:13px}
+  .warn b{color:#ffcf5c}
+  .hint{max-width:1180px;margin:14px 0 0;padding:12px 16px;border-radius:12px;
+    background:#101a22;border:1px solid #1d3a4a;color:#a8cfe0;font-size:13px;display:none}
+  .hint a{color:#67c7ff}
   footer{max-width:1180px;margin:24px 0 0;color:#5c6573;font-size:12px}
   code{font-family:ui-monospace,Menlo,Consolas,monospace;background:#161a23;padding:1px 5px;border-radius:4px}
 </style>
 </head>
 <body>
 
-<h1>三进制 vs 二进制 · GPU 位并行筛选</h1>
-<p class="sub">这个页面**真的在 GPU 上跑 compute**（WebGPU），不是画动画</p>
+<h1>三进制 vs 二进制 · 十亿对象 GPU 测试</h1>
+<p class="sub">WebGPU compute · <span id="mode">十亿对象模式</span> · 打开即自动运行（去掉 vsync，背靠背连续提交）</p>
+
+<div class="warn">
+  <b>⚠ 高负载测试：需要高性能独立显卡 + 大显存（建议 8 GB 以上独显）。</b>
+  默认模式约占 3–4 GB 显存、持续把 GPU 压到 100%、功耗接近满值。
+  核显 / 小显存 / 老驱动可能初始化失败、卡顿甚至驱动重置——真崩了也不怪谁，关掉页面就好。
+  页面扛不住时会自己停下来并给出提示；<b>关闭页面后显存与 GPU 占用立即释放，不留任何后台进程</b>。
+</div>
 
 <div class="query">查询：<b>a == True</b> &amp;&amp; <b>b == True</b> &amp;&amp; <b>c != False</b></div>
 
 <div class="bar-top">
-  <button id="start">开始跑（每帧重复 10 次 dispatch）</button>
-  <button id="stop" disabled>停止</button>
+  <button id="toggle" disabled>停止</button>
   <span class="status" id="status">未开始</span>
 </div>
 
 <div class="err" id="err"></div>
+<div class="hint" id="hint"></div>
 
 <div class="panels">
   <div class="panel bin">
     <h2><span class="dot"></span>BINARY · 逐对象比较</h2>
-    <p class="note">每对象 3 个 f32 · 一个线程处理 1 个对象</p>
+    <p class="note">每对象 3 个 f32 · 一次 12 字节 · 十亿对象要 12 GB 显存，本卡放不下 → 本页取 <b id="binPlan">--</b> 跑</p>
     <div class="big" id="binMs">--<span class="unit"> ms</span></div>
     <div class="meta"><span>每次 dispatch</span><b id="binOps">--</b></div>
     <div class="meta"><span>带宽 / 次</span><b id="binBw">--</b></div>
-    <div class="chart" style="margin:10px 0 0;padding:0;border:0;background:transparent">
-      <div class="row bin"><span class="name"></span><span class="track"><span class="fill" id="fillBin"></span></span><span class="num"></span></div>
-    </div>
+    <div class="meta"><span>对象数</span><b id="binN">--</b></div>
   </div>
 
   <div class="panel tri">
     <h2><span class="dot"></span>TERNARY · 位平面 + popc</h2>
-    <p class="note">每对象 6 bit · 一个线程处理 32 个对象</p>
+    <p class="note">每对象 6 bit · 一个线程一次判 32 个 · <b id="triPlan">--</b>，整卡放得下</p>
     <div class="big" id="triMs">--<span class="unit"> ms</span></div>
     <div class="meta"><span>每次 dispatch</span><b id="triOps">--</b></div>
     <div class="meta"><span>带宽 / 次</span><b id="triBw">--</b></div>
-    <div class="chart" style="margin:10px 0 0;padding:0;border:0;background:transparent">
-      <div class="row tri"><span class="name"></span><span class="track"><span class="fill" id="fillTri"></span></span><span class="num"></span></div>
-    </div>
+    <div class="meta"><span>对象数</span><b id="triN">--</b></div>
   </div>
 </div>
 
 <div class="summary">
-  <div class="card"><div class="big" id="ratio">--</div><div class="lbl">三进制快多少倍（实时）</div></div>
-  <div class="card"><div class="big" id="fps">--</div><div class="lbl">页面循环 FPS</div></div>
-  <div class="card"><div class="big" id="objs">--</div><div class="lbl">对象数</div></div>
+  <div class="card"><div class="big" id="ratio">--</div><div class="lbl">三进制快多少倍（按 G 对象/s）</div></div>
+  <div class="card"><div class="big" id="busy">--</div><div class="lbl">每轮 GPU 忙时（无 vsync 等待）</div></div>
+  <div class="card"><div class="big" id="objs">--</div><div class="lbl">三进制对象数</div></div>
 </div>
 
 <div class="verdict" id="verdict">
-  用 <b>WebGPU</b> 在本机显卡上跑同一份 kernel：二进制逐对象比较，三进制位平面一次判 32 个。
-  数据量 <b>1000 万对象</b>——二进制 120 MB（<b>超出 L2</b>），三进制 3.75 MB（<b>仍在 L2 内</b>）。
-  这正是带宽差距开始兑现的地方，和 Rust 侧 32× 的前提一致。
+  十亿对象：二进制需要 <b>3 × 4 GB = 12 GB</b> 显存，本卡放不下；三进制只要 <b>375 MB</b>。
+  所以三进制真的跑十亿对象，二进制按显存预算取可容纳的规模跑同一份 kernel，按 <b>G 对象/s</b> 对比。
+  每轮背靠背提交、不等 vsync——运行期间 GPU 连续满载。
 </div>
 
 <footer>
-  WebGPU 需要 Chrome / Edge 113+ 且开启硬件加速。数据完全在本机 GPU 上，不上传。
-  想复现 Rust 侧的 10 倍差距：<code>cargo run --release --bin trit_visibility</code>（1000 万对象，超出 L2）。
+  WebGPU 需要 Chrome / Edge 113+ 且开启硬件加速。数据完全在本机 GPU 上生成，不上传。
+  可长时间挂着跑；关闭页面后显存与 GPU 占用立即释放。<a href="?lite=1">轻量模式（1 亿对象）</a> ·
+  Rust 侧对照：<code>cargo run --release --bin trit_visibility</code> · 纯带宽基准：<code>cargo run --release --bin gpu_bw</code>
 </footer>
 
 <script type="module">
-const N = 10_000_000;         // 对象数（1000 万，120 MB，超出 L2）
-const NW = N / 32;             // 位平面字数
-const REPEAT = 10;             // 每帧重复次数（压 GPU）
+const LITE = new URLSearchParams(location.search).get('lite') === '1';
+const NT_WANT = LITE ? 100_000_000 : 1_000_000_000;  // 三进制对象数（默认十亿）
+const BIN_CAP = LITE ? 50_000_000 : 150_000_000;     // 二进制：按显存预算取（默认 1.5 亿）
+const WG = 256;                                       // 每 workgroup 线程数
+let NT = NT_WANT;                                     // 会按设备的单缓冲上限收紧
+let NW = NT / 32;
 
-const WGSL_BINARY = `
-struct Params { n: u32 };
+const WGSL_SCAN_BIN = `
+struct Params { n: u32, stride: u32 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read> a: array<f32>;
 @group(0) @binding(2) var<storage, read> b: array<f32>;
 @group(0) @binding(3) var<storage, read> c: array<f32>;
 @group(0) @binding(4) var<storage, read_write> counter: atomic<u32>;
+var<workgroup> wg: atomic<u32>;
 
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
-  if (i >= p.n) { return; }
-  if (a[i] > 0.5 && b[i] > 0.5 && c[i] > -0.5) {
-    atomicAdd(&counter, 1u);
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_index) lid: u32) {
+  if (lid == 0u) { atomicStore(&wg, 0u); }
+  workgroupBarrier();
+  var local = 0u;
+  for (var i = gid.x; i < p.n; i = i + p.stride) {
+    if (a[i] > 0.5 && b[i] > 0.5 && c[i] > -0.5) { local = local + 1u; }
+  }
+  if (local > 0u) { atomicAdd(&wg, local); }
+  workgroupBarrier();
+  if (lid == 0u) {
+    let total = atomicLoad(&wg);
+    if (total > 0u) { atomicAdd(&counter, total); }
   }
 }`;
 
-const WGSL_TERNARY = `
-struct Params { n: u32 };
+const WGSL_SCAN_TRI = `
+struct Params { n: u32, stride: u32 };
 @group(0) @binding(0) var<uniform> p: Params;
 @group(0) @binding(1) var<storage, read> pa: array<u32>;
 @group(0) @binding(2) var<storage, read> pb: array<u32>;
 @group(0) @binding(3) var<storage, read> nc: array<u32>;
 @group(0) @binding(4) var<storage, read_write> counter: atomic<u32>;
+var<workgroup> wg: atomic<u32>;
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_index) lid: u32) {
+  if (lid == 0u) { atomicStore(&wg, 0u); }
+  workgroupBarrier();
+  var local = 0u;
+  for (var w = gid.x; w < p.n; w = w + p.stride) {
+    let bits = pa[w] & pb[w] & ~nc[w];
+    local = local + countOneBits(bits);
+  }
+  if (local > 0u) { atomicAdd(&wg, local); }
+  workgroupBarrier();
+  if (lid == 0u) {
+    let total = atomicLoad(&wg);
+    if (total > 0u) { atomicAdd(&counter, total); }
+  }
+}`;
+
+const WGSL_FILL_BIN = `
+struct FP { n: u32, stride: u32, seed: u32 };
+@group(0) @binding(0) var<uniform> p: FP;
+@group(0) @binding(1) var<storage, read_write> a: array<f32>;
+@group(0) @binding(2) var<storage, read_write> b: array<f32>;
+@group(0) @binding(3) var<storage, read_write> c: array<f32>;
+
+fn hash(x0: u32) -> u32 {
+  var x = x0 * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  return (x >> 22u) ^ x;
+}
+fn tern(h: u32) -> f32 {
+  return f32(i32(h % 3u)) - 1.0;
+}
+@compute @workgroup_size(${WG})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let w = gid.x;
-  if (w >= p.n) { return; }
-  let bits = pa[w] & pb[w] & ~nc[w];
-  let n = countOneBits(bits);
-  if (n > 0u) { atomicAdd(&counter, n); }
+  for (var i = gid.x; i < p.n; i = i + p.stride) {
+    let h = hash(i ^ p.seed);
+    a[i] = tern(h);
+    b[i] = tern(hash(h));
+    c[i] = tern(hash(h ^ 2654435769u));
+  }
+}`;
+
+const WGSL_FILL_TRI = `
+struct FP { n: u32, stride: u32, seed: u32 };
+@group(0) @binding(0) var<uniform> p: FP;
+@group(0) @binding(1) var<storage, read_write> pa: array<u32>;
+@group(0) @binding(2) var<storage, read_write> pb: array<u32>;
+@group(0) @binding(3) var<storage, read_write> nc: array<u32>;
+
+fn hash(x0: u32) -> u32 {
+  var x = x0 * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  return (x >> 22u) ^ x;
+}
+@compute @workgroup_size(${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  for (var w = gid.x; w < p.n; w = w + p.stride) {
+    let h1 = hash(w ^ p.seed);
+    let h2 = hash(h1);
+    pa[w] = h1;
+    pb[w] = h2;
+    nc[w] = hash(h2);
+  }
 }`;
 
 const $ = id => document.getElementById(id);
 let device = null, queue = null;
 let binPipe = null, triPipe = null;
 let binBG = null, triBG = null;
+let binGroups = 0, triGroups = 0;
+let NB = 0;
 let running = false;
+let binPasses = 8, triPasses = 16;
+let samples = 0;
+let ready = false, looping = false, pageClosing = false, runStart = 0, spilled = false;
 
 function fail(msg) {
   $('err').style.display = 'block';
   $('err').textContent = msg;
   $('status').textContent = '无法启动';
+}
+
+function showHint(html) {
+  $('hint').style.display = 'block';
+  $('hint').innerHTML = html;
+}
+
+function liteLink() {
+  return LITE ? '' : ' · <a href="?lite=1">用轻量模式（1 亿对象）重试</a>';
+}
+
+function bufferLimitBytes(limits) {
+  return Math.min(limits.maxStorageBufferBindingSize, limits.maxBufferSize);
 }
 
 async function init() {
@@ -178,190 +267,244 @@ async function init() {
   });
   queue = device.queue;
 
+  device.lost.then((info) => {
+    if (pageClosing) return;
+    running = false;
+    ready = false;
+    fail('GPU 设备丢失（' + info.reason + '）：多半是显存不足或驱动重置。刷新或关闭页面即可。');
+    showHint('设备丢失后显存已由系统回收，关掉页面不会有任何残留。');
+    $('toggle').textContent = '重新开始';
+    $('toggle').disabled = false;
+  });
+
   const info = adapter.info || {};
-  $('status').textContent = 'GPU: ' + (info.description || info.vendor || '已就绪');
+  const desc = info.description || info.vendor || '已就绪';
 
-  // ---- 数据 ----
-  const a = new Float32Array(N), b = new Float32Array(N), c = new Float32Array(N);
-  const pa = new Uint32Array(NW), pb = new Uint32Array(NW), nc = new Uint32Array(NW);
-  let s = 123456789;
-  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
-  for (let i = 0; i < N; i++) {
-    const va = (rnd() * 3 | 0) - 1, vb = (rnd() * 3 | 0) - 1, vc = (rnd() * 3 | 0) - 1;
-    a[i] = va; b[i] = vb; c[i] = vc;
-    const w = i >>> 5, bit = 1 << (i & 31);
-    if (va === 1) pa[w] |= bit;
-    if (vb === 1) pb[w] |= bit;
-    if (vc === -1) nc[w] |= bit;
-  }
+  const capBytes = bufferLimitBytes(adapter.limits);
+  // 三进制每平面 NT/8 字节：按单缓冲上限收紧（取整到 100 万，保证 /32 整除）
+  const maxNT = Math.floor(capBytes * 8 / 1e6) * 1e6;
+  NT = Math.min(NT_WANT, maxNT);
+  NW = NT / 32;
+  // 二进制：受单缓冲上限约束，并按显存预算封顶
+  const capByLimit = Math.floor(capBytes / 4 / 1e6) * 1e6;
+  NB = Math.min(BIN_CAP, capByLimit);
 
-  const mk = (arr, label) => {
-    const buf = device.createBuffer({
-      label,
-      size: arr.byteLength,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    queue.writeBuffer(buf, 0, arr);
-    return buf;
-  };
-  const aBuf = mk(a, 'a'), bBuf = mk(b, 'b'), cBuf = mk(c, 'c');
-  const paBuf = mk(pa, 'pa'), pbBuf = mk(pb, 'pb'), ncBuf = mk(nc, 'nc');
+  const maxGroups = Math.min(65535, device.limits.maxComputeWorkgroupsPerDimension);
+  binGroups = Math.min(maxGroups, Math.ceil(NB / WG));
+  triGroups = Math.min(maxGroups, Math.ceil(NW / WG));
+  const binStride = binGroups * WG;
+  const triStride = triGroups * WG;
+
+  $('status').textContent = '正在分配显存：三进制 ' +
+    (NW * 12 / 1e6).toFixed(0) + ' MB + 二进制 ' + (NB * 12 / 1e9).toFixed(2) + ' GB…';
+
+  // 显存不足/分配失败时给用户体面的提示，而不是白屏
+  device.pushErrorScope('out-of-memory');
+  device.pushErrorScope('validation');
+
+  const mkData = (bytes, label) => device.createBuffer({
+    label,
+    size: bytes,
+    usage: GPUBufferUsage.STORAGE,
+  });
+  const aBuf = mkData(NB * 4, 'a');
+  const bBuf = mkData(NB * 4, 'b');
+  const cBuf = mkData(NB * 4, 'c');
+  const paBuf = mkData(NW * 4, 'pa');
+  const pbBuf = mkData(NW * 4, 'pb');
+  const ncBuf = mkData(NW * 4, 'nc');
 
   const counter = device.createBuffer({
     label: 'counter',
     size: 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  const params = device.createBuffer({
-    label: 'params',
-    size: 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  queue.writeBuffer(params, 0, new Uint32Array([N]));
+  queue.writeBuffer(counter, 0, new Uint32Array([0]));
 
-  const bgl = device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-    ],
-  });
-  const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
-
-  const makePipe = (code) => {
-    const mod = device.createShaderModule({ code });
-    return device.createComputePipeline({ layout, compute: { module: mod, entryPoint: 'main' } });
+  const mkParams = (vals) => {
+    const buf = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const padded = new Uint32Array(4);
+    padded.set(vals);
+    queue.writeBuffer(buf, 0, padded);
+    return buf;
   };
-  binPipe = makePipe(WGSL_BINARY);
-  triPipe = makePipe(WGSL_TERNARY);
+  const binScanParams = mkParams([NB, binStride]);
+  const triScanParams = mkParams([NW, triStride]);
+  const binFillParams = mkParams([NB, binStride, 1]);
+  const triFillParams = mkParams([NW, triStride, 7]);
 
-  const makeBG = (x, y, z) => device.createBindGroup({
-    layout: bgl,
-    entries: [
-      { binding: 0, resource: { buffer: params } },
-      { binding: 1, resource: { buffer: x } },
-      { binding: 2, resource: { buffer: y } },
-      { binding: 3, resource: { buffer: z } },
-      { binding: 4, resource: { buffer: counter } },
-    ],
+  const pipe = (code) => device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: device.createShaderModule({ code }), entryPoint: 'main' },
   });
-  binBG = makeBG(aBuf, bBuf, cBuf);
+  const binScan = pipe(WGSL_SCAN_BIN);
+  const triScan = pipe(WGSL_SCAN_TRI);
+  const binFill = pipe(WGSL_FILL_BIN);
+  const triFill = pipe(WGSL_FILL_TRI);
 
-  // 三进制侧：params.n 要换成 NW
-  const paramsNW = device.createBuffer({
-    label: 'paramsNW',
-    size: 4,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  const bg = (p, buffers) => device.createBindGroup({
+    layout: p.getBindGroupLayout(0),
+    entries: buffers.map((buffer, i) => ({ binding: i, resource: { buffer } })),
   });
-  queue.writeBuffer(paramsNW, 0, new Uint32Array([NW]));
-  const bglT = bgl;
-  triBG = device.createBindGroup({
-    layout: bglT,
-    entries: [
-      { binding: 0, resource: { buffer: paramsNW } },
-      { binding: 1, resource: { buffer: paBuf } },
-      { binding: 2, resource: { buffer: pbBuf } },
-      { binding: 3, resource: { buffer: ncBuf } },
-      { binding: 4, resource: { buffer: counter } },
-    ],
-  });
+  binBG = bg(binScan, [binScanParams, aBuf, bBuf, cBuf, counter]);
+  triBG = bg(triScan, [triScanParams, paBuf, pbBuf, ncBuf, counter]);
 
-  $('objs').textContent = N.toLocaleString();
-  $('binBw').textContent = '120 MB';
-  $('triBw').textContent = '3.75 MB';
-  $('start').disabled = false;
+  // 数据全部在 GPU 上生成（十亿对象不可能走 JS 数组）
+  const binFillBG = bg(binFill, [binFillParams, aBuf, bBuf, cBuf]);
+  const triFillBG = bg(triFill, [triFillParams, paBuf, pbBuf, ncBuf]);
+  const fill = (p, g, groups) => {
+    const enc = device.createCommandEncoder();
+    const cp = enc.beginComputePass();
+    cp.setPipeline(p);
+    cp.setBindGroup(0, g);
+    cp.dispatchWorkgroups(groups);
+    cp.end();
+    queue.submit([enc.finish()]);
+  };
+  fill(binFill, binFillBG, binGroups);
+  fill(triFill, triFillBG, triGroups);
+  await queue.onSubmittedWorkDone();
+
+  binPipe = binScan;
+  triPipe = triScan;
+
+  $('binN').textContent = NB.toLocaleString() + '（显存预算内）';
+  $('binPlan').textContent = NB.toLocaleString() + ' 个对象（' + (NB * 12 / 1e9).toFixed(2) + ' GB）';
+  $('triN').textContent = NT.toLocaleString();
+  $('triPlan').textContent = NT.toLocaleString() + ' 个对象（' + (NW * 12 / 1e6).toFixed(0) + ' MB）';
+  $('binBw').textContent = (NB * 12 / 1e9).toFixed(2) + ' GB';
+  $('triBw').textContent = (NW * 12 / 1e6).toFixed(0) + ' MB';
+  $('objs').textContent = NT.toLocaleString();
+  $('mode').textContent = LITE ? '轻量模式 · 1 亿对象' : '十亿对象模式';
+  $('verdict').innerHTML = LITE
+    ? '轻量模式：三进制跑 <b>' + NT.toLocaleString() + '</b> 个对象（' +
+      (NW * 12 / 1e6).toFixed(0) + ' MB），二进制取 <b>' + NB.toLocaleString() +
+      '</b> 个对象（' + (NB * 12 / 1e9).toFixed(2) + ' GB）。按 <b>G 对象/s</b> 对比，' +
+      '每轮背靠背提交，运行期间 GPU 连续满载。'
+    : '十亿对象：二进制需要 <b>3 × 4 GB = 12 GB</b> 显存，本卡放不下；三进制只要 <b>375 MB</b>。' +
+      '所以三进制真的跑十亿对象，二进制按显存预算取可容纳的规模跑同一份 kernel，按 <b>G 对象/s</b> 对比。' +
+      '每轮背靠背提交、不等 vsync——运行期间 GPU 连续满载。';
+  $('toggle').disabled = false;
+
+  // 预热（不计入采样）
+  await bench(binPipe, binBG, binGroups, 1);
+  await bench(triPipe, triBG, triGroups, 1);
+
+  const verr = await device.popErrorScope();
+  const oerr = await device.popErrorScope();
+  if (verr || oerr) {
+    throw new Error(oerr ? '显存不足，浏览器拒绝了分配' : 'WebGPU 校验失败：' + verr.message);
+  }
+
   return true;
 }
 
-function dispatch(pipe, bg, groups) {
+async function bench(pipe, bgGroup, groups, passes) {
   const enc = device.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(pipe);
-  pass.setBindGroup(0, bg);
-  pass.dispatchWorkgroups(groups);
-  pass.end();
-  queue.submit([enc.finish()]);
-}
-
-const binGroups = Math.ceil(N / 256);
-const triGroups = Math.ceil(NW / 256);
-
-let lastT = performance.now(), frames = 0, fpsSmoothed = 0;
-
-async function frame() {
-  if (!running) return;
+  const cp = enc.beginComputePass();
+  cp.setPipeline(pipe);
+  cp.setBindGroup(0, bgGroup);
+  for (let k = 0; k < passes; k++) cp.dispatchWorkgroups(groups);
+  cp.end();
   const t0 = performance.now();
-  for (let k = 0; k < REPEAT; k++) dispatch(binPipe, binBG, binGroups);
+  queue.submit([enc.finish()]);
   await queue.onSubmittedWorkDone();
-  const binMs = (performance.now() - t0) / REPEAT;
-
-  const t1 = performance.now();
-  for (let k = 0; k < REPEAT; k++) dispatch(triPipe, triBG, triGroups);
-  await queue.onSubmittedWorkDone();
-  const triMs = (performance.now() - t1) / REPEAT;
-
-  // UI
-  $('binMs').innerHTML = binMs.toFixed(4) + '<span class="unit"> ms</span>';
-  $('triMs').innerHTML = triMs.toFixed(4) + '<span class="unit"> ms</span>';
-  const binOps = N / (binMs / 1000) / 1e9;
-  const triOps = N / (triMs / 1000) / 1e9;
-  $('binOps').textContent = binOps.toFixed(2) + ' G/s';
-  $('triOps').textContent = triOps.toFixed(2) + ' G/s';
-  const ratio = binMs / triMs;
-  $('ratio').textContent = ratio.toFixed(1) + '×';
-  $('fillBin').style.width = Math.min(100, (binMs / triMs) * 100 / Math.max(1, binMs / triMs)) + '%';
-  $('fillTri').style.width = '100%';
-
-  const now = performance.now();
-  frames++;
-  if (now - lastT > 500) {
-    fpsSmoothed = frames * 1000 / (now - lastT);
-    $('fps').textContent = fpsSmoothed.toFixed(0);
-    frames = 0;
-    lastT = now;
-    $('status').textContent =
-      '运行中 · BINARY ' + binMs.toFixed(3) + ' ms · TERNARY ' + triMs.toFixed(3) + ' ms';
-  }
-  requestAnimationFrame(frame);
+  return (performance.now() - t0) / passes;
 }
 
-$('start').onclick = async () => {
-  if (!device) {
+async function loop() {
+  if (looping) return;
+  looping = true;
+  try {
+    while (running) {
+      const binMs = await bench(binPipe, binBG, binGroups, binPasses);
+      const triMs = await bench(triPipe, triBG, triGroups, triPasses);
+      if (!running) break;  // 采样期间按了停止：不要用旧数据覆盖“已停止”状态
+
+      $('binMs').innerHTML = binMs.toFixed(3) + '<span class="unit"> ms</span>';
+      $('triMs').innerHTML = triMs.toFixed(3) + '<span class="unit"> ms</span>';
+      const binOps = NB / (binMs / 1000) / 1e9;
+      const triOps = NT / (triMs / 1000) / 1e9;
+      $('binOps').textContent = binOps.toFixed(2) + ' G/s';
+      $('triOps').textContent = triOps.toFixed(1) + ' G/s';
+      $('ratio').textContent = (triOps / binOps).toFixed(1) + '×';
+      $('busy').textContent = (binMs * binPasses + triMs * triPasses).toFixed(0) + ' ms';
+
+      // 自适应每一轮的 dispatch 数：让每轮 GPU 忙时稳定在 ~400 ms
+      if (samples > 0) {
+        binPasses = Math.min(512, Math.max(1, Math.round(200 / binMs)));
+        triPasses = Math.min(8192, Math.max(1, Math.round(200 / triMs)));
+      }
+      samples++;
+
+      // 吞吐异常低 → 多半是显存被挤到共享内存，给出可执行的建议
+      if (samples === 3) {
+        const bw = (NW * 12) / (triMs / 1000) / 1e9;
+        if (bw < 60) {
+          showHint('检测到显存带宽只有 ' + bw.toFixed(0) +
+            ' GB/s，数据可能被挤到了共享内存：关掉其它占用 GPU 的标签页/程序后刷新' +
+            liteLink() + '。');
+        }
+      }
+
+      const up = Math.floor((performance.now() - runStart) / 1000);
+      $('status').textContent =
+        '运行中 · BINARY ' + binMs.toFixed(3) + ' ms · TERNARY ' + triMs.toFixed(3) +
+        ' ms · 已连续 ' + up + ' s';
+      await new Promise(r => setTimeout(r, 0));
+    }
+  } finally {
+    looping = false;
+  }
+}
+
+$('toggle').onclick = () => {
+  if (running) {
+    running = false;
+    $('toggle').textContent = '继续';
+    $('status').textContent = '已停止（显存仍占用；关闭页面即释放）';
+  } else if (ready) {
+    running = true;
+    runStart = performance.now();
+    $('toggle').textContent = '停止';
+    loop();
+  } else {
+    $('toggle').disabled = true;
+    start();
+  }
+};
+
+async function start() {
+  try {
     const ok = await init();
     if (!ok) return;
+  } catch (e) {
+    ready = false;
+    $('toggle').disabled = false;
+    fail('初始化失败：' + (e && e.message ? e.message : e));
+    showHint('显存不足或设备不支持时：关掉其它占用 GPU 的标签页/程序后刷新' +
+      liteLink() + '。也可以直接关闭页面，不会留下任何东西。');
+    return;
   }
-  if (running) return;
   running = true;
-  $('start').disabled = true;
-  $('stop').disabled = false;
-  $('status').textContent = '运行中…';
-  lastT = performance.now();
-  frame();
-};
+  runStart = performance.now();
+  ready = true;
+  $('toggle').textContent = '停止';
+  $('toggle').disabled = false;
+  loop();
+}
 
-$('stop').onclick = () => {
-  running = false;
-  $('start').disabled = false;
-  $('stop').disabled = true;
-  $('status').textContent = '已停止';
-};
+addEventListener('pagehide', () => { pageClosing = true; running = false; });
 
-// 页面加载即自动开始（默认 1000 万对象）
+// 页面加载即自动开始（默认十亿对象）
 if (!navigator.gpu) {
   fail('这个浏览器不支持 WebGPU。请用 Chrome / Edge 113+，并确认开启了硬件加速。');
 } else {
-  $('status').textContent = '正在初始化：生成 1000 万对象数据…';
-  setTimeout(async () => {
-    const ok = await init();
-    if (!ok) return;
-    running = true;
-    $('start').disabled = true;
-    $('stop').disabled = false;
-    lastT = performance.now();
-    frame();
-  }, 30);
+  $('status').textContent = '正在初始化 GPU 数据…';
+  setTimeout(start, 30);
 }
 </script>
 </body>

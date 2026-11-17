@@ -33,11 +33,25 @@
 
 ## 直观对比
 
-打开 `index.html`（纯静态页面，双击即可）：
+打开 `index.html`（WebGPU 页面，建议用本地 http 打开，如 `python -m http.server`）：
 
-- 左右两个面板同时扫描
-- 左边逐对象比较，右边每 32 个一批
-- 命中格子高亮，底部实时进度条
+- 三进制跑 **十亿对象**（375 MB，整卡放得下）；二进制受 8 GB 显存限制，取 1.5 亿对象（1.8 GB）
+- 每个面板实时显示每次 dispatch 的 ms、G 对象/s、带宽/次
+- 连续背靠背提交、不等 vsync——运行期间 GPU 持续满载（4060 Ti 实测 99~100%、约 98 W）
+
+## 运行要求（重要）
+
+- 需要一台带**高性能独立显卡**的机器：建议 8 GB 以上显存、Chrome / Edge 113+ 且开启硬件加速
+- 默认模式会占用约 **3–4 GB 显存**、持续把 GPU 压到 100%（4060 Ti 实测约 98 W）
+- 核显 / 小显存 / 老驱动可能初始化失败、卡顿或驱动重置——真崩了也不怪谁，关掉页面就好
+- 初始化失败或带宽异常时，页面会自己停下来并给出提示，可点「轻量模式（1 亿对象）」重试
+- **关闭页面后显存与 GPU 占用立即释放**，不留后台进程；也可以长时间挂着跑
+
+## 发布（发包）
+
+1. 修改页面后 `git push` 到 `main`
+2. GitHub Pages（legacy 构建，`main` 根目录）自动部署
+3. 约 1 分钟后生效：<https://bfxh.github.io/trit-vs-binary/>（轻量模式加 `?lite=1`）
 
 ## 复现
 
@@ -92,7 +106,7 @@ if (n > 0u) { atomicAdd(&counter, n); }
 ## 结构
 
 ```
-index.html                    可视化对比页（静态，双击打开）
+index.html                    十亿对象 WebGPU 对比页
 src/bin/trit_visibility.rs    wgpu compute shader 基准
 Cargo.toml
 ```
