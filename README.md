@@ -44,6 +44,20 @@
 - 运行期间 GPU 85~93%、约 142 W（接近 160 W 功耗墙）
 - 地址：<https://bfxh.github.io/trit-vs-binary/mushroom.html>
 
+### 原生 Rust 对照（Vulkan，离屏，不锁 vsync）
+
+`cargo run --release --bin mushroom_bench`，879×681，与网页同一份 WGSL：
+
+| 档位 | 原生 Rust（Vulkan） | 网页（D3D12） |
+|---|---:|---:|
+| 低（3 迭代 / 8 幂） | 9.8–10.2 ms · ~100 FPS | 60 FPS（vsync 上限） |
+| 中（4 迭代 / 8 幂） | 16.2 ms · ~61.6 FPS | 60 FPS（vsync 上限） |
+| 高（100 迭代 / 10 幂） | 62.1 ms · 16.1 FPS | 18 FPS（GPU 瓶颈） |
+
+结论：网页与原生在 ±15% 以内，瓶颈始终是 GPU 的逐像素分形求交。
+这个负载是纯浮点/三角函数，**没有三进制版本**；三进制能切入的是
+“把分形预先体素化成占据网格，再用位平面做 DDA 跳空”，属于另一个实验。
+
 ## 运行要求（重要）
 
 - 需要一台带**高性能独立显卡**的机器：建议 8 GB 以上显存、Chrome / Edge 113+ 且开启硬件加速
@@ -113,6 +127,7 @@ if (n > 0u) { atomicAdd(&counter, n); }
 ```
 index.html                    十亿对象 WebGPU 对比页
 mushroom.html                 毒蘑菇分形光线步进（3D 镜头 + 三档强度）
+src/bin/mushroom_bench.rs     原生 Rust 版本（同内核，离屏基准）
 src/bin/trit_visibility.rs    wgpu compute shader 基准
 Cargo.toml
 ```
