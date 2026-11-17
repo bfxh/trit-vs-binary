@@ -8,10 +8,15 @@ publish = false
 [dependencies]
 wgpu = "30"
 pollster = "1.0"
+winit = "0.30"
 
 [[bin]]
 name = "trit_visibility"
 path = "src/bin/trit_visibility.rs"
+
+[[bin]]
+name = "trit_gui"
+path = "src/bin/trit_gui.rs"
 
 [profile.release]
 opt-level = 3
