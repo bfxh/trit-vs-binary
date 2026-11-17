@@ -52,12 +52,15 @@
     <div>网格 <b id="sGrid">--</b> · 体素化 <b id="sVox">--</b></div>
     <div>三进制 <b id="sTri">--</b>（实心 + 表面两位平面）· 二进制 <b id="sBin">--</b></div>
     <div>实心 <b id="sSolid">--</b> · 表面 <b id="sSurf">--</b></div>
-    <div>FPS <b id="sFps">--</b> · 当前表示 <b id="sMode">三进制</b></div>
-    <div>A/B DDA <b id="sBench">--</b></div>
+    <div>实时 <b id="sFps">--</b> FPS · GPU <b id="sMs">--</b> ms/帧 · 当前表示 <b id="sMode">三进制</b></div>
+    <div>显存（本页）<b id="sMem">--</b> · 当前读 <b id="sRead">--</b></div>
+    <div>A/B 粗格 <b id="sBenchC">--</b></div>
+    <div>A/B 纯细步 <b id="sBenchF">--</b></div>
   </div>
   <div class="hint">拖动旋转 · 滚轮缩放 · 松手后自动旋转</div>
   <div class="tools" id="tools">
     <button id="btnMode">切到二进制表示</button>
+    <button id="btnCoarse">粗格跳空：开</button>
     <button data-n="256">256³</button>
     <button data-n="512">512³</button>
     <a href="./mushroom.html">← 分形页</a>
@@ -198,6 +201,7 @@ struct CamU {
 struct GridU {
   dims: vec4<u32>,     // N, WX, coarse cell, mode
   originVs: vec4<f32>, // min.xyz, voxel size
+  flags: vec4<u32>,    // coarseOn, 0,0,0
 };
 
 @group(0) @binding(0) var<uniform> cam: CamU;
@@ -207,6 +211,7 @@ struct GridU {
 @group(0) @binding(4) var<storage, read> binv: array<u32>;
 @group(0) @binding(5) var<storage, read> coarse: array<u32>;
 @group(0) @binding(6) var<storage, read_write> sink: atomic<u32>;
+@group(0) @binding(7) var<storage, read_write> steps: atomic<u32>;
 
 fn solidT(x: u32, y: u32, z: u32) -> bool {
   let w = (z * gu.dims.x + y) * gu.dims.y + (x >> 5u);
@@ -231,11 +236,12 @@ fn domNormal(d: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(0.0, 0.0, -sign(d.z));
 }
 
-struct Hit { p: vec3<f32>, n: vec3<f32>, v: vec3<u32>, ok: bool };
+struct Hit { p: vec3<f32>, n: vec3<f32>, v: vec3<u32>, ok: bool, steps: u32 };
 
-fn trace(ro: vec3<f32>, rd: vec3<f32>, mode: u32) -> Hit {
+fn trace(ro: vec3<f32>, rd: vec3<f32>, mode: u32, coarseOn: u32) -> Hit {
   var h: Hit;
   h.ok = false;
+  h.steps = 0u;
   let n = f32(gu.dims.x);
   let v = gu.originVs.w;
   let o = (ro - gu.originVs.xyz) / v;
@@ -248,6 +254,29 @@ fn trace(ro: vec3<f32>, rd: vec3<f32>, mode: u32) -> Hit {
   let tmin = max(max(mn.x, mn.y), mn.z);
   let tmax = min(min(mx.x, mx.y), mx.z);
   if (tmax <= max(tmin, 0.0)) { return h; }
+
+  let dt = 0.42 / length(d);
+
+  if (coarseOn == 0u) {
+    var ft = max(tmin, 0.0) + 0.001;
+    for (var k = 0; k < 4000; k++) {
+      h.steps = h.steps + 1u;
+      let p = o + d * ft;
+      let vi = vec3<i32>(floor(p));
+      if (all(vi >= vec3<i32>(0)) && all(vi < vec3<i32>(i32(gu.dims.x)))) {
+        if (solidAt(u32(vi.x), u32(vi.y), u32(vi.z), mode)) {
+          h.p = gu.originVs.xyz + (vec3<f32>(vi) + vec3<f32>(0.5)) * v;
+          h.n = domNormal(d);
+          h.v = vec3<u32>(vi);
+          h.ok = true;
+          return h;
+        }
+      }
+      ft += dt;
+      if (ft > tmax) { break; }
+    }
+    return h;
+  }
 
   let cs = f32(gu.dims.z);
   let cdimF = n / cs;
@@ -262,13 +291,13 @@ fn trace(ro: vec3<f32>, rd: vec3<f32>, mode: u32) -> Hit {
   tMax.y = ((f32(cell.y) + select(0.0, 1.0, d.y > 0.0)) * cs - o.y) / d.y;
   tMax.z = ((f32(cell.z) + select(0.0, 1.0, d.z > 0.0)) * cs - o.z) / d.z;
 
-  let dt = 0.42 / length(d);
   for (var it = 0; it < 600; it++) {
     let ci = (u32(cell.z) * u32(cdim) + u32(cell.y)) * u32(cdim) + u32(cell.x);
     if (coarse[ci] != 0u) {
       let tExit = min(min(tMax.x, tMax.y), tMax.z);
       var ft = t;
       for (var fj = 0; fj < 64; fj++) {
+        h.steps = h.steps + 1u;
         let p = o + d * ft;
         let vi = vec3<i32>(floor(p));
         if (all(vi >= vec3<i32>(0)) && all(vi < vec3<i32>(i32(gu.dims.x)))) {
@@ -329,7 +358,7 @@ fn fs(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   let dir = normalize(cam.fwd.xyz
     + uv.x * cam.misc.x * cam.misc.y * cam.right.xyz
     + uv.y * cam.misc.x * cam.upv.xyz);
-  let hit = trace(cam.pos.xyz, dir, gu.dims.w);
+  let hit = trace(cam.pos.xyz, dir, gu.dims.w, gu.flags.x);
   let bg = mix(vec3<f32>(0.006, 0.007, 0.012), vec3<f32>(0.02, 0.016, 0.03),
                clamp(uv.y * 0.5 + 0.5, 0.0, 1.0));
   var col = bg;
@@ -350,7 +379,8 @@ fn bench(@builtin(global_invocation_id) g: vec3<u32>) {
   let dir = normalize(cam.fwd.xyz
     + uv.x * cam.misc.x * cam.misc.y * cam.right.xyz
     + uv.y * cam.misc.x * cam.upv.xyz);
-  let h = trace(cam.pos.xyz, dir, gu.dims.w);
+  let h = trace(cam.pos.xyz, dir, gu.dims.w, gu.flags.x);
+  atomicAdd(&steps, h.steps);
   if (h.ok) {
     let hash = (h.v.x * 73856093u) ^ (h.v.y * 19349663u) ^ (h.v.z * 83492791u);
     atomicAdd(&sink, hash + 1u);
@@ -360,9 +390,11 @@ fn bench(@builtin(global_invocation_id) g: vec3<u32>) {
 
 let device, queue, ctx, canvas;
 let voxPipe1, voxPipe2, renderPipe, benchPipe;
-let renderBG0, renderBG1, benchBG0, benchBG1;
-let camBuf, grid0, grid1, sinkBuf, statBuf;
+const bg = [[null, null], [null, null]]; // [mode][coarseOn]
+let camBuf, sinkBuf, statBuf, stepsBuf;
 let mode = 0; // 0 = ternary planes, 1 = binary bytes
+let coarseOn = 1;
+let frameMs = 0, probing = false, probeCount = 0;
 let yaw = 0.0, pitch = 0.06, dist = 2.05;
 const target = [0, 0, 0];
 const tanHalf = Math.tan(32.5 * Math.PI / 180);
@@ -445,8 +477,10 @@ async function main() {
   const coarseBuf = mkStorage(CD * CD * CD * 4);
   statBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   sinkBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  stepsBuf = device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
   queue.writeBuffer(statBuf, 0, new Uint32Array([0, 0]));
   queue.writeBuffer(sinkBuf, 0, new Uint32Array([0]));
+  queue.writeBuffer(stepsBuf, 0, new Uint32Array([0]));
 
   // ---- 体素化 ----
   const voxModule = device.createShaderModule({ code: VOXEL_WGSL });
@@ -495,6 +529,7 @@ async function main() {
   }
   const voxMs = performance.now() - t0;
   const stat = await mapU32(statBuf, 2);
+  solidBuf.destroy();
 
   // ---- 渲染/基准 ----
   const renderModule = device.createShaderModule({ code: RENDER_WGSL });
@@ -506,6 +541,7 @@ async function main() {
     { binding: 4, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     { binding: 5, visibility: GPUShaderStage.FRAGMENT | GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+    { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
   ]});
   const renderLayout = device.createPipelineLayout({ bindGroupLayouts: [renderBGL] });
   renderPipe = device.createRenderPipeline({
@@ -516,31 +552,31 @@ async function main() {
   });
   benchPipe = device.createComputePipeline({ layout: renderLayout, compute: { module: renderModule, entryPoint: 'bench' } });
 
-  const mkGrid = (m) => {
-    const b = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const ab = new ArrayBuffer(32);
+  const mkGrid = (m, c) => {
+    const b = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const ab = new ArrayBuffer(48);
     new Uint32Array(ab, 0, 4).set([N, WX, CS, m]);
     new Float32Array(ab, 16, 4).set([-BOUND, -BOUND, -BOUND, WB]);
+    new Uint32Array(ab, 32, 4).set([c, 0, 0, 0]);
     queue.writeBuffer(b, 0, ab);
     return b;
   };
-  grid0 = mkGrid(0);
-  grid1 = mkGrid(1);
   camBuf = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-  const mkBG = (gridBuf) => device.createBindGroup({ layout: renderBGL, entries: [
-    { binding: 0, resource: { buffer: camBuf } },
-    { binding: 1, resource: { buffer: gridBuf } },
-    { binding: 2, resource: { buffer: pnzBuf } },
-    { binding: 3, resource: { buffer: pnegBuf } },
-    { binding: 4, resource: { buffer: binBuf } },
-    { binding: 5, resource: { buffer: coarseBuf } },
-    { binding: 6, resource: { buffer: sinkBuf } },
-  ]});
-  renderBG0 = mkBG(grid0);
-  renderBG1 = mkBG(grid1);
-  benchBG0 = mkBG(grid0);
-  benchBG1 = mkBG(grid1);
+  for (let m = 0; m < 2; m++) {
+    for (let c = 0; c < 2; c++) {
+      const gridBuf = mkGrid(m, c);
+      bg[m][c] = device.createBindGroup({ layout: renderBGL, entries: [
+        { binding: 0, resource: { buffer: camBuf } },
+        { binding: 1, resource: { buffer: gridBuf } },
+        { binding: 2, resource: { buffer: pnzBuf } },
+        { binding: 3, resource: { buffer: pnegBuf } },
+        { binding: 4, resource: { buffer: binBuf } },
+        { binding: 5, resource: { buffer: coarseBuf } },
+        { binding: 6, resource: { buffer: sinkBuf } },
+        { binding: 7, resource: { buffer: stepsBuf } },
+      ]});
+    }
+  }
 
   $('sGrid').textContent = N + '³';
   $('sVox').textContent = voxMs.toFixed(0) + ' ms';
@@ -548,15 +584,23 @@ async function main() {
   $('sBin').textContent = (N * N * N / 1e6).toFixed(1) + ' MB';
   $('sSolid').textContent = stat[0].toLocaleString();
   $('sSurf').textContent = stat[1].toLocaleString();
+  const memTotal = (N * N * N * 2 / 8 + N * N * N + CD * CD * CD * 4) / 1e6;
+  $('sMem').textContent = memTotal.toFixed(0) + ' MB';
+  const updateModeUI = () => {
+    $('sMode').textContent = mode ? '二进制' : '三进制';
+    $('btnMode').textContent = mode ? '切到三进制表示' : '切到二进制表示';
+    $('sRead').textContent = mode ? '字节枚举 1 B/体素' : '实心位平面 2 bit/体素';
+  };
+  updateModeUI();
   document.querySelectorAll('.tools button[data-n]').forEach(b => {
     b.classList.toggle('on', parseInt(b.dataset.n, 10) === N);
     b.onclick = () => { location.search = '?n=' + b.dataset.n; };
   });
 
-  $('btnMode').onclick = () => {
-    mode = mode ? 0 : 1;
-    $('sMode').textContent = mode ? '二进制' : '三进制';
-    $('btnMode').textContent = mode ? '切到三进制表示' : '切到二进制表示';
+  $('btnMode').onclick = () => { mode = mode ? 0 : 1; updateModeUI(); };
+  $('btnCoarse').onclick = () => {
+    coarseOn = coarseOn ? 0 : 1;
+    $('btnCoarse').textContent = coarseOn ? '粗格跳空：开' : '粗格跳空：关（很慢）';
   };
 
   setupInput();
@@ -569,20 +613,18 @@ async function main() {
 }
 
 async function runBench() {
-  const W = 640, H = 360, PASS = 160, ROUNDS = 11;
-  // 基准固定相机
   yaw = 0.0; pitch = 0.06; dist = 2.05;
   resize();
   writeCam();
   queue.writeBuffer(camBuf, 0, camData);
 
   const zero = new Uint32Array([0]);
-  const measure = async (bg) => {
-    queue.writeBuffer(sinkBuf, 0, zero);
+  const median = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const measure = async (group, W, H, PASS) => {
     const enc = device.createCommandEncoder();
     const cp = enc.beginComputePass();
     cp.setPipeline(benchPipe);
-    cp.setBindGroup(0, bg);
+    cp.setBindGroup(0, group);
     for (let i = 0; i < PASS; i++) cp.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8), 1);
     cp.end();
     const t0 = performance.now();
@@ -590,43 +632,51 @@ async function runBench() {
     await queue.onSubmittedWorkDone();
     return (performance.now() - t0) / PASS;
   };
-  const median = (a) => {
-    const s = a.slice().sort((x, y) => x - y);
-    return s[s.length >> 1];
+
+  const suite = async (coarse, W, H, PASS, ROUNDS) => {
+    for (let i = 0; i < 2; i++) {
+      await measure(bg[0][coarse], W, H, PASS);
+      await measure(bg[1][coarse], W, H, PASS);
+    }
+    const tri = [], bin = [];
+    for (let r = 0; r < ROUNDS; r++) {
+      if ((r & 1) === 0) {
+        tri.push(await measure(bg[0][coarse], W, H, PASS));
+        bin.push(await measure(bg[1][coarse], W, H, PASS));
+      } else {
+        bin.push(await measure(bg[1][coarse], W, H, PASS));
+        tri.push(await measure(bg[0][coarse], W, H, PASS));
+      }
+    }
+    const info = {};
+    for (const [name, m] of [['三进制', 0], ['二进制', 1]]) {
+      queue.writeBuffer(sinkBuf, 0, zero);
+      queue.writeBuffer(stepsBuf, 0, zero);
+      const enc = device.createCommandEncoder();
+      const cp = enc.beginComputePass();
+      cp.setPipeline(benchPipe);
+      cp.setBindGroup(0, bg[m][coarse]);
+      cp.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8), 1);
+      cp.end();
+      queue.submit([enc.finish()]);
+      await queue.onSubmittedWorkDone();
+      info[name] = {
+        hit: (await mapU32(sinkBuf, 1))[0],
+        steps: (await mapU32(stepsBuf, 1))[0],
+      };
+    }
+    return { tri: median(tri), bin: median(bin), info, rays: W * H };
   };
 
-  // 预热（交替，把 GPU 拉到稳定频率）
-  for (let i = 0; i < 3; i++) { await measure(benchBG0); await measure(benchBG1); }
-
-  const tri = [], bin = [];
-  for (let r = 0; r < ROUNDS; r++) {
-    if ((r & 1) === 0) {
-      tri.push(await measure(benchBG0));
-      bin.push(await measure(benchBG1));
-    } else {
-      bin.push(await measure(benchBG1));
-      tri.push(await measure(benchBG0));
-    }
-  }
-  const t = median(tri), b = median(bin);
-
-  // 命中一致性
-  const hits = {};
-  for (const [name, bg] of [['三进制', benchBG0], ['二进制', benchBG1]]) {
-    queue.writeBuffer(sinkBuf, 0, zero);
-    const enc = device.createCommandEncoder();
-    const cp = enc.beginComputePass();
-    cp.setPipeline(benchPipe); cp.setBindGroup(0, bg);
-    cp.dispatchWorkgroups(Math.ceil(W / 8), Math.ceil(H / 8), 1);
-    cp.end();
-    queue.submit([enc.finish()]);
-    await queue.onSubmittedWorkDone();
-    hits[name] = (await mapU32(sinkBuf, 1))[0];
-  }
-
-  $('sBench').innerHTML = '三进制 <b>' + t.toFixed(3) + ' ms</b> · 二进制 <b>' + b.toFixed(3) +
-    ' ms</b>（' + (b / t).toFixed(2) + '×）· 命中 ' + hits['三进制'] + '/' + hits['二进制'] +
-    (hits['三进制'] === hits['二进制'] ? ' ✓' : ' ✗');
+  const c = await suite(1, 640, 360, 160, 9);
+  const f = await suite(0, 480, 270, 20, 7);
+  const okHits = c.info['三进制'].hit === c.info['二进制'].hit &&
+                 f.info['三进制'].hit === f.info['二进制'].hit;
+  $('sBenchC').innerHTML = '三进制 <b>' + c.tri.toFixed(3) + ' ms</b> · 二进制 <b>' +
+    c.bin.toFixed(3) + ' ms</b>（' + (c.bin / c.tri).toFixed(2) + '×）· 命中一致 ' + (okHits ? '✓' : '✗');
+  const st = f.info['三进制'].steps / f.rays;
+  $('sBenchF').innerHTML = '三进制 <b>' + f.tri.toFixed(3) + ' ms</b> · 二进制 <b>' +
+    f.bin.toFixed(3) + ' ms</b>（' + (f.bin / f.tri).toFixed(2) + '×）· ~' + st.toFixed(0) + ' 步/射线';
 }
 function renderFrame() {
   resize();
@@ -640,17 +690,27 @@ function renderFrame() {
     }],
   });
   pass.setPipeline(renderPipe);
-  pass.setBindGroup(0, mode ? renderBG1 : renderBG0);
+  pass.setBindGroup(0, bg[mode][coarseOn]);
   pass.draw(3);
   pass.end();
+  const t0 = performance.now();
   queue.submit([enc.finish()]);
+  return t0;
 }
 
 function frame(now) {
   const dt = Math.min(0.05, (now - lastNow) / 1000 || 0.016);
   lastNow = now;
   if (!dragging && now - lastInteract > 2200) yaw += dt * 0.12;
-  renderFrame();
+  const t0 = renderFrame();
+  probeCount++;
+  if (!probing && probeCount >= 45) {
+    probing = true;
+    queue.onSubmittedWorkDone().then(() => {
+      frameMs = performance.now() - t0;
+      $('sMs').textContent = frameMs.toFixed(1);
+    }).finally(() => { probing = false; probeCount = 0; });
+  }
   frames++;
   if (now - fpsT > 500) {
     const fps = frames * 1000 / (now - fpsT);
