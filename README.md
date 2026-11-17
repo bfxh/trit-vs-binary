@@ -39,6 +39,11 @@
 - 每个面板实时显示每次 dispatch 的 ms、G 对象/s、带宽/次
 - 连续背靠背提交、不等 vsync——运行期间 GPU 持续满载（4060 Ti 实测 99~100%、约 98 W）
 
+另有一个 **毒蘑菇分形页** `mushroom.html`：移植 cznull volumeshader_bm 的同款内核（球坐标折叠 8 次幂分形 + 二分求交），可自由转镜头。
+- 低 / 中 / 高 三档强度；4060 Ti 实测：中档 60 FPS、高档 18 FPS
+- 运行期间 GPU 85~93%、约 142 W（接近 160 W 功耗墙）
+- 地址：<https://bfxh.github.io/trit-vs-binary/mushroom.html>
+
 ## 运行要求（重要）
 
 - 需要一台带**高性能独立显卡**的机器：建议 8 GB 以上显存、Chrome / Edge 113+ 且开启硬件加速
@@ -107,6 +112,7 @@ if (n > 0u) { atomicAdd(&counter, n); }
 
 ```
 index.html                    十亿对象 WebGPU 对比页
+mushroom.html                 毒蘑菇分形光线步进（3D 镜头 + 三档强度）
 src/bin/trit_visibility.rs    wgpu compute shader 基准
 Cargo.toml
 ```
