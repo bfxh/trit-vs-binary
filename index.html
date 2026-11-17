@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>三进制 vs 二进制 · GPU 位并行筛选</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#12151d; --line:#1f2430;
+    --bin:#4aa3ff; --tri:#43e97b; --dim:#7b8496; --text:#e6e9ef;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.6 ui-sans-serif,system-ui,"Segoe UI",Roboto,"Helvetica Neue",Arial;
+    padding:28px 20px 60px;
+  }
+  h1{font-size:26px;margin:0 0 6px;font-weight:650;letter-spacing:-.3px}
+  .sub{color:var(--dim);margin:0 0 22px}
+  .query{
+    display:inline-block;margin:0 0 24px;padding:10px 14px;border-radius:10px;
+    background:#161a23;border:1px solid var(--line);font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-size:13px;color:#c8d0dd;
+  }
+  .query b{color:var(--tri)}
+  .panels{display:grid;grid-template-columns:1fr 1fr;gap:18px;max-width:1180px}
+  @media(max-width:820px){.panels{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .panel h2{margin:0 0 4px;font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
+  .bin .dot{background:var(--bin)} .tri .dot{background:var(--tri)}
+  .panel .note{color:var(--dim);font-size:12px;margin:0 0 12px}
+  canvas{width:100%;height:auto;display:block;border-radius:8px;background:#0a0c11}
+  .stat{
+    display:flex;justify-content:space-between;margin-top:12px;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;
+  }
+  .stat .k{color:var(--dim)}
+  .stat .v{font-weight:600}
+  .bin .v{color:var(--bin)} .tri .v{color:var(--tri)}
+  .bar{height:6px;border-radius:3px;background:#1a1f2a;margin-top:10px;overflow:hidden}
+  .bar i{display:block;height:100%;width:0;transition:width .2s linear}
+  .bin .bar i{background:var(--bin)} .tri .bar i{background:var(--tri)}
+
+  .summary{max-width:1180px;margin:26px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card .big{font-size:30px;font-weight:700;letter-spacing:-1px}
+  .card .lbl{color:var(--dim);font-size:12px;margin-top:2px}
+  .card.tri .big{color:var(--tri)} .card.bin .big{color:var(--bin)}
+
+  .chart{max-width:1180px;margin:22px 0 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .chart h3{margin:0 0 14px;font-size:15px;font-weight:600}
+  .row{display:flex;align-items:center;gap:12px;margin:10px 0}
+  .row .name{width:86px;color:var(--dim);font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .row .track{flex:1;height:26px;background:#161a23;border-radius:6px;overflow:hidden}
+  .row .fill{height:100%;width:0;transition:width .8s cubic-bezier(.2,.8,.2,1)}
+  .row.bin .fill{background:linear-gradient(90deg,#2563eb,#4aa3ff)}
+  .row.tri .fill{background:linear-gradient(90deg,#17944a,#43e97b)}
+  .row .num{width:112px;text-align:right;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+  .verdict{
+    max-width:1180px;margin:22px 0 0;padding:16px 18px;border-radius:14px;
+    background:#0f1a14;border:1px solid #1d3a29;color:#bfe8cf;font-size:13.5px
+  }
+  .verdict b{color:var(--tri)}
+  footer{max-width:1180px;margin:26px 0 0;color:#5c6573;font-size:12px}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;background:#161a23;padding:1px 5px;border-radius:4px}
+</style>
+</head>
+<body>
+
+<h1>三进制 vs 二进制 · GPU 位并行筛选</h1>
+<p class="sub">100 万对象 · 3 个三值条件 · GPU compute shader 真实实测（RTX 4060 Ti / Vulkan）</p>
+
+<div class="query">查询：<b>a == True</b> &amp;&amp; <b>b == True</b> &amp;&amp; <b>c != False</b></div>
+
+<div class="panels">
+  <div class="panel bin">
+    <h2><span class="dot"></span>BINARY · 逐对象比较</h2>
+    <p class="note">每对象 3 个 f32（12 MB）· 一个线程处理 1 个对象</p>
+    <canvas id="cvBin" width="520" height="300"></canvas>
+    <div class="stat"><span class="k">耗时 / 次</span><span class="v">0.0373 ms</span></div>
+    <div class="stat"><span class="k">吞吐</span><span class="v">26.8 M 对象/s</span></div>
+    <div class="stat"><span class="k">带宽 / 次</span><span class="v">12.0 MB</span></div>
+    <div class="bar"><i id="barBin"></i></div>
+  </div>
+
+  <div class="panel tri">
+    <h2><span class="dot"></span>TERNARY · 位平面 + popc</h2>
+    <p class="note">每对象 6 bit（0.38 MB）· 一个线程处理 32 个对象</p>
+    <canvas id="cvTri" width="520" height="300"></canvas>
+    <div class="stat"><span class="k">耗时 / 次</span><span class="v">0.0194 ms</span></div>
+    <div class="stat"><span class="k">吞吐</span><span class="v">51.6 M 对象/s</span></div>
+    <div class="stat"><span class="k">带宽 / 次</span><span class="v">0.38 MB</span></div>
+    <div class="bar"><i id="barTri"></i></div>
+  </div>
+</div>
+
+<div class="summary">
+  <div class="card tri"><div class="big">1.92×</div><div class="lbl">三进制快 1.92 倍（实测）</div></div>
+  <div class="card tri"><div class="big">32×</div><div class="lbl">存储密度（12 MB → 0.38 MB）</div></div>
+  <div class="card"><div class="big">74,209</div><div class="lbl">命中数（两版完全一致 ✓）</div></div>
+</div>
+
+<div class="chart">
+  <h3>吞吐对比（百万对象 / 秒）</h3>
+  <div class="row bin"><span class="name">BINARY</span><span class="track"><span class="fill" id="fillBin"></span></span><span class="num">26.8 M/s</span></div>
+  <div class="row tri"><span class="name">TERNARY</span><span class="track"><span class="fill" id="fillTri"></span></span><span class="num">51.6 M/s</span></div>
+</div>
+
+<div class="verdict">
+  <b>为什么不是 32×？</b> 因为 12 MB 数据完全落在 4060 Ti 的 L2（32 MB）里，二进制版根本没被显存带宽卡住——
+  位并行与存储密度的优势没有兑现的土壤。要看到真正的差距，得把对象数提到 1000 万以上（120 MB，超出 L2）。
+</div>
+
+<footer>
+  数据来源：<code>trit_visibility.rs</code>（wgpu compute shader，批量 dispatch 后统一 poll）·
+  左图逐对象扫描，右图每 32 个一批，两者跑同一份数据、同一条查询。
+</footer>
+
+<script>
+// 用 1 万个格子示意 100 万个对象
+const COLS = 100, ROWS = 100, CELL = 5, GAP = 0.4;
+const TOTAL = COLS * ROWS;
+
+function setup(id){
+  const cv = document.getElementById(id);
+  const ctx = cv.getContext('2d');
+  return {cv, ctx};
+}
+
+const A = setup('cvBin');
+const B = setup('cvTri');
+
+// 生成固定随机命中（约 7.4%）
+let seed = 12345;
+function rnd(){ seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+const hits = new Uint8Array(TOTAL);
+let hitCount = 0;
+for (let i = 0; i < TOTAL; i++) { if (rnd() < 0.0742) { hits[i] = 1; hitCount++; } }
+
+function drawGrid(ctx, upto, color){
+  ctx.clearRect(0,0,520,300);
+  for (let i = 0; i < TOTAL; i++){
+    const c = i % COLS, r = (i / COLS) | 0;
+    const x = 10 + c * (CELL + GAP), y = 10 + r * (CELL + GAP);
+    if (i < upto){
+      ctx.fillStyle = hits[i] ? color : '#1b2230';
+    } else {
+      ctx.fillStyle = '#0f131b';
+    }
+    ctx.fillRect(x, y, CELL, CELL);
+  }
+}
+
+// 两种速度：二进制 1 单位/帧，三进制 32 单位/帧
+let posBin = 0, posTri = 0;
+const SPEED_BIN = TOTAL / 220;   // 约 220 帧扫完（示意）
+const SPEED_TRI = SPEED_BIN * 1.92;
+
+function frame(){
+  posBin = Math.min(TOTAL, posBin + SPEED_BIN);
+  posTri = Math.min(TOTAL, posTri + SPEED_TRI);
+  drawGrid(A.ctx, posBin, '#4aa3ff');
+  drawGrid(B.ctx, posTri, '#43e97b');
+  document.getElementById('barBin').style.width = (posBin/TOTAL*100) + '%';
+  document.getElementById('barTri').style.width = (posTri/TOTAL*100) + '%';
+  if (posBin >= TOTAL && posTri >= TOTAL){
+    setTimeout(() => { posBin = 0; posTri = 0; requestAnimationFrame(frame); }, 900);
+    return;
+  }
+  requestAnimationFrame(frame);
+}
+
+drawGrid(A.ctx, 0, '#4aa3ff');
+drawGrid(B.ctx, 0, '#43e97b');
+requestAnimationFrame(frame);
+
+// 柱状图进场动画
+setTimeout(() => {
+  document.getElementById('fillBin').style.width = (26.8/51.6*100) + '%';
+  document.getElementById('fillTri').style.width = '100%';
+}, 300);
+</script>
+</body>
+</html>

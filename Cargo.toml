@@ -1,0 +1,18 @@
+[package]
+name = "trit-vs-binary"
+version = "0.1.0"
+edition = "2021"
+description = "三进制 vs 二进制 · GPU 位并行筛选对比"
+publish = false
+
+[dependencies]
+wgpu = "30"
+pollster = "1.0"
+
+[[bin]]
+name = "trit_visibility"
+path = "src/bin/trit_visibility.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
